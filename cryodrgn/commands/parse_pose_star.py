@@ -15,6 +15,8 @@ def add_args(parser):
     parser.add_argument('--relion31', action='store_true', help='Flag for relion3.1 star format')
     parser.add_argument('--Apix', type=float, help='Pixel size (A); Required if translations are specified in Angstroms')
     parser.add_argument('-o', metavar='PKL', type=os.path.abspath, required=True, help='Output pose.pkl')
+    parser.add_argument('--labels', metavar='PKL', type=os.path.abspath, required=True, help='Output pose.pkl')
+    parser.add_argument('--outdir', type=os.path.abspath)
     return parser
 
 def main(args):
@@ -36,6 +38,10 @@ def main(args):
     log('Converting to rotation matrix:')
     rot = np.asarray([utils.R_from_relion(*x) for x in euler])
     log(rot[0])
+    labels = utils.load_pkl(args.labels)
+    for i in range(labels.min(), labels.max()):
+        out_file = args.outdir + "/pre" + str(i) + ".star"
+        s.write_subset(out_file, labels==i)
 
     # parse translations
     trans = np.empty((N,2))
@@ -57,7 +63,7 @@ def main(args):
     # write output
     log(f'Writing {args.o}')
     with open(args.o,'wb') as f:
-        pickle.dump((rot,trans),f)
+        pickle.dump((rot,trans,euler),f)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

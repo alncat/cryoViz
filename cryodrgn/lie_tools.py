@@ -7,6 +7,7 @@ All functions are pytorch-ified
 import torch
 from torch.distributions import Normal
 import numpy as np
+import healpy as hp
 
 def map_to_lie_algebra(v):
     """Map a point in R^N to the tangent space at the identity, i.e.
@@ -74,6 +75,15 @@ def SO3_to_s2s2(r):
     basis vectors, concatenated as Bx6'''
     return r.view(*r.shape[:-2],9)[...,:6].contiguous()
 
+def rotation_loss(pred_rots, ref_rots):
+    #print(pred_rots.shape, ref_rots.shape)
+    prod = -(pred_rots*ref_rots).sum(-1).sum(-1)
+    return prod
+
+def translation_loss(pred_trans, ref_trans):
+    #print(pred_trans.shape, ref_trans.shape)
+    return (pred_trans - ref_trans).pow(2).sum(-1)
+
 def SO3_to_quaternions(r):
     """Map batch of SO(3) matrices to quaternions."""
     batch_dims = r.shape[:-2]
@@ -133,6 +143,56 @@ def quaternions_to_SO3(q):
         2*(r*j + i*k), 2*(i*j - r*k), -r*r - i*i + j*j + k*k
         ], -1).view(*q.shape[:-1], 3, 3)
 
+def quaternions_to_SO3_wiki(q):
+    '''Normalizes q and maps to group matrix.'''
+    q = q / q.norm(p=2, dim=-1, keepdim=True)
+    w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+
+    return torch.stack([
+        1. - 2*y*y - 2*z*z, 2*(x*y - z*w), 2*(x*z + y*w),
+        2*(x*y + z*w), 1. - 2*x*x - 2*z*z, 2*(y*z - x*w),
+        2*(x*z - y*w), 2*(y*z + x*w), 1. - 2*x*x - 2*y*y
+        ], -1).view(*q.shape[:-1], 3, 3)
+
+def zrot(x):
+    x = x*np.pi/180.
+    ca = x.cos()
+    sa = x.sin()
+    zero = torch.zeros_like(x)
+    one = torch.ones_like(x)
+    return torch.stack([
+        ca, sa, zero,
+        -sa, ca, zero,
+        zero, zero, one
+    ], -1).view(*x.shape, 3, 3)
+
+def yrot(x):
+    x = x*np.pi/180.
+    ca = x.cos()
+    sa = x.sin()
+    zero = torch.zeros_like(x)
+    one = torch.ones_like(x)
+    return torch.stack([
+        ca, zero, -sa,
+        zero, one, zero,
+        sa, zero, ca
+    ], -1).view(*x.shape, 3, 3)
+
+def euler_to_SO3(euler):
+    #euler = euler*np.pi/180.
+    if euler.shape[-1] == 3:
+        Ra = zrot(euler[..., 0])
+        Rb = yrot(euler[..., 1])
+        Ry = zrot(euler[..., 2])
+        R = Ry @ Rb @ Ra
+    elif euler.shape[-1] == 2:
+        Ra = zrot(euler[..., 0])
+        Rb = yrot(euler[..., 1])
+        R = Rb @ Ra
+    else:
+        raise Exception("wrong shape {}".format(euler.shape))
+    return R
+
 def random_quaternions(n, dtype=torch.float32, device=None):
     u1, u2, u3 = torch.rand(3, n, dtype=dtype, device=device)
     return torch.stack((
@@ -141,6 +201,17 @@ def random_quaternions(n, dtype=torch.float32, device=None):
         torch.sqrt(u1) * torch.sin(2 * np.pi * u3),
         torch.sqrt(u1) * torch.cos(2 * np.pi * u3),
     ), 1)
+
+def random_biased_quaternions(n, bias=1., device=None):
+    u = torch.rand(n, 3, device=device)
+    one = torch.randn(n, 1, device=device).sign()*bias
+    quat = torch.cat([one, u], dim=1)
+    return quat
+
+def random_biased_SO3(n, bias=1., device=None):
+    rots = quaternions_to_SO3_wiki(random_biased_quaternions(n, bias, device))
+    #print(rots @ rots.transpose(-1, -2))
+    return rots
 
 def random_SO3(n, dtype=torch.float32, device=None):
     return quaternions_to_SO3(random_quaternions(n, dtype, device))

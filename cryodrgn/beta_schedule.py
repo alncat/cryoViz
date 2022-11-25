@@ -4,7 +4,7 @@ def get_beta_schedule(schedule):
     if type(schedule) == float:
         return ConstantSchedule(schedule)
     elif schedule == 'a':
-        return LinearSchedule(0.001, 15, 0, 1000000)
+        return LinearSchedule(0.001, 1, 0, 500000)
     elif schedule == 'b':
         return LinearSchedule(5, 15, 200000, 800000)
     elif schedule == 'c':

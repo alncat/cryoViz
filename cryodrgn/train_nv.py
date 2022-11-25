@@ -193,6 +193,7 @@ def sample_neighbors(posetracker, data, euler, ind, ctf_params, ctf_grid, mask, 
     mus, idices, top_mus = posetracker.sample_neighbors(euler.cpu(), ind.cpu(), num_pose=100)
     other_euler = posetracker.get_euler(idices).to(device).view(B, -1, 3)
     other_rot, other_tran = posetracker.get_pose(idices)
+    other_rot  = other_rot.to(device).view(B, -1, 3, 3)
     other_tran = other_tran.to(device).view(B, -1, 2)
     # get images
     other_y = torch.from_numpy(data.get_batch(idices)).to(device).view(B, -1, W, W)
@@ -204,9 +205,9 @@ def sample_neighbors(posetracker, data, euler, ind, ctf_params, ctf_grid, mask, 
     #print(other_ctf.shape, other_freqs.shape, euler.shape)
     other_c = ctf.compute_ctf(other_freqs, *torch.split(other_ctf[:, 1:], 1, 1)).view(B, -1, W, W_x)
     other_c = torch.fft.fftshift(other_c, dim=-2)
-    other_c = utils.crop_fft(other_c, out_size)
+    #other_c = utils.crop_fft(other_c, out_size)
     # put all together
-    others = {"y": other_y, "euler": other_euler, "trans": other_tran, "y_fft": other_y_fft, "ctf": other_c}
+    others = {"y": other_y, "rots": other_rot, "euler": other_euler, "trans": other_tran, "y_fft": other_y_fft, "ctf": other_c}
     #print(other_euler.shape, other_tran.shape, other_y.shape, idices.shape)
     return mus, others, top_mus
 
@@ -219,10 +220,10 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ind=None, ctf_params=None,
     B = y.size(0)
     D = lattice.D
     W = y.size(-1)
-    out_size = 128
+    out_size = 160
     y, y_fft = data_augmentation(y, trans.unsqueeze(1), ctf_grid, mask, grid, args.window_r)
     # get real mask
-    mask_real = grid.get_circular_mask(args.window_r, s=out_size/192)
+    mask_real = grid.get_circular_mask(args.window_r, s=out_size/160)
     mask_real = utils.crop_image(mask_real, out_size)
 
     if use_ctf:
@@ -266,7 +267,7 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ind=None, ctf_params=None,
                 # undo experimental image translation
                 #y_fft_mask = ctf_grid.translate_ft(y_fft, -trans)
                 y_fft_s    = torch.fft.fftshift(y_fft, dim=(-2))
-                y_fft_crop = utils.crop_fft(y_fft_s, out_size)
+                y_fft_crop = utils.crop_fft(y_fft_s, 128)
                 y_fft_crop = torch.fft.ifftshift(y_fft_crop, dim=(-2))
                 #diff = y_fft_masked * c.unsqueeze(1)
                 #diff /= (c.pow(2).unsqueeze(1) + 0.5)
@@ -285,15 +286,15 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ind=None, ctf_params=None,
 
         # center and crop ctf to train size
         c = torch.fft.fftshift(c, dim=-2)
-        c = utils.crop_fft(c, out_size)
+        #c = utils.crop_fft(c, out_size)
         # encode images to latents
         z, encout = model.vanilla_encode(diff, rot, trans)
         # sample nearest neighbors
         posetracker.set_emb(encout["z_mu"], ind)
         mus, others, top_mus = sample_neighbors(posetracker, data, euler, ind, ctf_params, ctf_grid, mask, grid, args, W, out_size)
-        others = top_mus = None
         mus = mus.to(z.get_device())
-        #top_mus = top_mus.to(z.get_device())
+        top_mus = top_mus.to(z.get_device())
+        others = None
         # decode latents
         decout = model.vanilla_decode(rot, trans, z=z, save_mrc=save_image, eulers=euler,
                                       ref_fft=y_fft, ctf=c, encout=encout, others=others, mask=mask_real)
@@ -311,21 +312,23 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ind=None, ctf_params=None,
             z_mu = encout["z_mu"]
             z_logstd = encout["z_logstd"]
             #z = encout["encoding"]
+        # encode reonstruction
+        y_recon_ori = decout["y_recon_ori"]
+        #print(y_recon_ori[:, :1, ...].shape)
+        #z_ori, encout_ori = model.vanilla_encode(y_recon_ori[:, :1, ...], rot, trans)
 
     if use_ctf:
         if not vanilla:
             y_recon *= c.view(B,-1)[:,mask]
         else:
-            y_recon_ori = decout["y_recon_ori"]
             y_recon = decout["y_recon"]
             y_ref   = decout["y_ref"]
 
-            d_i = 1
-            d_j = 0
+            d_i, d_j = 0, 1
             if plot:
-                correlations = F.cosine_similarity(y_recon_ori[:,d_j,...].view(B,-1), y_ref[:,d_j,...].view(B,-1))
+                correlations = F.cosine_similarity(y_recon_ori[:,d_i,...].view(B,-1), y_ref[:,d_i,...].view(B,-1))
                 utils.plot_image(axes, y_recon_ori[0,0,...].detach().cpu().numpy(), 0, 0, log=True)
-                utils.plot_image(axes, y_recon_ori[d_i,d_j,...].detach().cpu().numpy(), d_i, 0, log=True)
+                utils.plot_image(axes, y_recon_ori[d_j,d_i,...].detach().cpu().numpy(), d_j, 0, log=True)
                 #utils.plot_image(axes, y[d_i,...].detach().numpy(), 1)
                 log("correlations w.o. mask: {}".format(correlations.detach().cpu().numpy()))
 
@@ -340,10 +343,10 @@ def run_batch(model, lattice, y, yt, rot, tilt=None, ind=None, ctf_params=None,
                     #y_recon_fft *= group_scales.unsqueeze(-1).unsqueeze(-1)
             if plot:
                 utils.plot_image(axes, y_recon[0,0,...].detach().cpu().numpy(), 0, 1)
-                utils.plot_image(axes, y_recon[d_i,d_j,...].detach().cpu().numpy(), d_i, 1)
-                utils.plot_image(axes, y_ref[d_i,d_j,...].detach().cpu().numpy(), d_i, 2)
+                utils.plot_image(axes, y_recon[d_j,d_i,...].detach().cpu().numpy(), d_j, 1)
+                utils.plot_image(axes, y_ref[d_j,d_i,...].detach().cpu().numpy(), d_j, 2)
 
-                correlations = F.cosine_similarity(y_recon[:,d_j,:].view(B,-1), y_ref[:,d_j,...].view(B,-1))
+                correlations = F.cosine_similarity(y_recon[:,d_i,:].view(B,-1), y_ref[:,d_i,...].view(B,-1))
                 log("correlations with mask: {}".format(correlations.detach().cpu().numpy()))
                 plt.show()
     if not vanilla:
@@ -376,7 +379,7 @@ def loss_function(z_mu, z_logstd, y, yt, y_recon, mask, beta,
 
         #gen_loss = -F.cosine_similarity(y_recon.view(B, C, -1), y.view(B, C, -1), dim=-1)
         em_l2_loss = (-2.*y_recon*y + y_recon**2).sum(dim=(-1,-2))
-        #mu_de = torch.cat([z_mu.detach().unsqueeze(1), top_mus[:, :C-1, :]], dim=1) #(B, C, z)
+        #mu_de = torch.cat([z_mu.detach().unsqueeze(1), top_mus], dim=1) #(B, C, z)
         #probs = (zs.detach().unsqueeze(1) - mu_de).pow(2).sum(-1)
         #probs = torch.exp(-probs*0.5)
         #print(probs)
@@ -432,8 +435,7 @@ def loss_function(z_mu, z_logstd, y, yt, y_recon, mask, beta,
             loss = gen_loss + beta_control*beta*(kld)/mask_sum + torch.mean(losses['tvl2'] + 3e-1*losses['l2'])/(mask_sum*0.5)
             #loss = loss + 2.*pairKLD/(B*B*C*mask_sum)*alpha
             # compute mmd
-            mmd = utils.compute_smmd(z_mu, z_logstd, s=.5)
-            #c_mmd = 0.
+            mmd = utils.compute_smmd(z_mu, z_logstd, s=.25)
             c_mmd = utils.compute_cross_smmd(z_mu, mus, s=1/16, adaptive=False)
             #print("c_mmd: ", c_mmd, "mmd: ", mmd)
             loss += lamb*mmd/mask_sum + 1.*lamb*c_mmd/mask_sum
@@ -652,7 +654,8 @@ def main(args):
     #if args.do_pose_sgd: assert args.domain == 'hartley', "Need to use --domain hartley if doing pose SGD"
     do_pose_sgd = args.do_pose_sgd
     do_deform   = args.warp_type == 'deform' or args.encode_mode == 'grad'
-    posetracker = PoseTracker.load(args.poses, Nimg, D, 's2s2' if do_pose_sgd else None, ind,
+    # use D-1 instead of D
+    posetracker = PoseTracker.load(args.poses, Nimg, D-1, 's2s2' if do_pose_sgd else None, ind,
                                    deform=do_deform, deform_emb_size=args.zdim, latents=args.latents, batch_size=args.batch_size)
     posetracker.to(device)
     pose_optimizer = torch.optim.SparseAdam(list(posetracker.parameters()), lr=args.pose_lr) if do_pose_sgd else None
@@ -767,23 +770,24 @@ def main(args):
         # 3. load the new state dict
         model.load_state_dict(model_dict)
 
-        #pretrained_dict = checkpoint['encoder_state_dict']
-        #model_dict = model.encoder.state_dict()
-        ## 1. filter out unnecessary keys
-        #pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-        ## 2. overwrite entries in the existing state dict
-        #model_dict.update(pretrained_dict)
-        ## 3. load the new state dict
-        #model.encoder.load_state_dict(model_dict)
+        if True:
+            pretrained_dict = checkpoint['encoder_state_dict']
+            model_dict = model.encoder.state_dict()
+            # 1. filter out unnecessary keys
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+            # 2. overwrite entries in the existing state dict
+            model_dict.update(pretrained_dict)
+            # 3. load the new state dict
+            model.encoder.load_state_dict(model_dict)
 
-        #pretrained_dict = checkpoint['decoder_state_dict']
-        #model_dict = model.decoder.state_dict()
-        ## 1. filter out unnecessary keys
-        #pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
-        ## 2. overwrite entries in the existing state dict
-        #model_dict.update(pretrained_dict)
-        ## 3. load the new state dict
-        #model.decoder.load_state_dict(model_dict)
+            pretrained_dict = checkpoint['decoder_state_dict']
+            model_dict = model.decoder.state_dict()
+            # 1. filter out unnecessary keys
+            pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict}
+            # 2. overwrite entries in the existing state dict
+            model_dict.update(pretrained_dict)
+            # 3. load the new state dict
+            model.decoder.load_state_dict(model_dict)
 
         pretrained_pose_dict = checkpoint['pose_state_dict']
         pose_dict = posetracker.state_dict()

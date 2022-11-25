@@ -105,5 +105,7 @@ def load_ctf_for_training(D, ctf_params_pkl):
     # Slice out the first column (D)
     return ctf_params[:,1:]
 
-
+def load_group_for_training(group_pkl):
+    group = utils.load_pkl(group_pkl)
+    return group
 
