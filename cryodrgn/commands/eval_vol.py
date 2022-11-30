@@ -97,9 +97,12 @@ def main(args):
     downfrac = cfg['dataset_args']['downfrac']
     down_vol_size = cfg['model_args']['down_vol_size']
     Apix = cfg['model_args']['Apix']
+    templateres = cfg['model_args']['templateres']
     args.Apix = down_vol_size/((D - 1)*downfrac*0.85)*Apix
     log("downfrac: {}".format(downfrac))
     log("Apix: changing from {} to {}".format(Apix, args.Apix))
+    assert templateres is not None
+    log("templateres: output volume is of size {}".format(templateres))
 
     if args.downsample:
         assert args.downsample % 2 == 0, "Boxsize must be even"
@@ -113,7 +116,8 @@ def main(args):
                 template_type=args.template_type, warp_type=args.warp_type,
                 num_struct=args.num_struct,
                 device=device, symm=args.symm, ctf_grid=None,
-                deform_emb_size=args.deform_size, downfrac=downfrac)
+                deform_emb_size=args.deform_size, downfrac=downfrac,
+                templateres=templateres)
 
     vanilla = args.pe_type == "vanilla"
 

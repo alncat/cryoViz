@@ -44,7 +44,8 @@ class HetOnlyVAE(nn.Module):
             symm = None,
             render_size=140,
             downfrac=0.5,
-            down_vol_size=None):
+            down_vol_size=None,
+            templateres=192):
         super(HetOnlyVAE, self).__init__()
         self.lattice = lattice
         self.zdim = zdim
@@ -103,9 +104,11 @@ class HetOnlyVAE(nn.Module):
         self.template_type = template_type
         self.symm = symm
         self.deform_emb_size = deform_emb_size
+        self.templateres = templateres
         self.decoder = get_decoder(3+zdim, lattice.D, players, pdim, domain, enc_type, enc_dim,
                                    activation, ref_vol=ref_vol, Apix=Apix,
-                                   template_type=self.template_type, warp_type=self.warp_type,
+                                   template_type=self.template_type, templateres=self.templateres,
+                                   warp_type=self.warp_type,
                                    symm=self.symm, ctf_grid=ctf_grid,
                                    fixed_deform=self.fixed_deform, deform_emb_size=self.deform_emb_size,
                                    render_size=self.render_size, down_vol_size=self.down_vol_size)
@@ -390,7 +393,8 @@ def get_decoder(in_dim, D, layers, dim, domain, enc_type, enc_dim=None, activati
         #model = VanillaDecoder
         #if template_type is None:
         #    assert ref_vol is not None
-        return VanillaDecoder(D, ref_vol, Apix, template_type=template_type, warp_type=warp_type,
+        return VanillaDecoder(D, ref_vol, Apix, template_type=template_type, templateres=templateres,
+                              warp_type=warp_type,
                               symm_group=symm, ctf_grid=ctf_grid,
                               fixed_deform=fixed_deform,
                               deform_emb_size=deform_emb_size,
@@ -417,6 +421,7 @@ class ConvTemplate(nn.Module):
         self.zdim = in_dim
         self.outchannels = outchannels
         self.templateres = templateres
+        templateres = 256
 
         self.template1 = nn.Sequential(nn.Linear(self.zdim, 512), nn.LeakyReLU(0.2),
                                        nn.Linear(512, 2048), nn.LeakyReLU(0.2))
@@ -433,7 +438,7 @@ class ConvTemplate(nn.Module):
         inchannels, outchannels = 512, 256
         template3 = []
         template4 = []
-        for i in range(int(np.log2(self.templateres)) - 3): #3):
+        for i in range(int(np.log2(templateres)) - 3): #3):
             if i < 3:
                 template3.append(nn.ConvTranspose3d(inchannels, outchannels, 4, 2, 1))
                 template3.append(nn.LeakyReLU(0.2))
@@ -450,11 +455,13 @@ class ConvTemplate(nn.Module):
         for m in [self.template1, self.template2, self.template3, self.template4]:
             utils.initseq(m)
         utils.initmod(self.conv_out, gain=1./np.sqrt(templateres))
+        self.intermediate_size = int(32*self.templateres/256)
+        log("convtemplate: intermediate activation will be resampled from 32 to {}".format(self.intermediate_size))
 
     def forward(self, encoding):
         template2 = self.template2(self.template1(encoding).view(-1, 2048, 1, 1, 1))
         template3 = self.template3(template2)
-        template3 = F.interpolate(template3, size=24, mode="trilinear", align_corners=ALIGN_CORNERS)
+        template3 = F.interpolate(template3, size=self.intermediate_size, mode="trilinear", align_corners=ALIGN_CORNERS)
         template = self.template4(template3)
         out =  self.conv_out(template)
         return out #self.conv_out(template)
